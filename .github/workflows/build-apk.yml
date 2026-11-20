@@ -6,14 +6,31 @@ on:
   push:
     branches:
       - main
+      - feature/live-traffic-monitoring
 
 jobs:
   build:
     runs-on: ubuntu-24.04
 
+    defaults:
+      run:
+        working-directory: ./android
+
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
+
+      - name: Verify Android project structure
+        working-directory: .
+        run: |
+          echo "Repository files:"
+          ls -la
+
+          echo "Android project files:"
+          ls -la android/
+
+          test -f android/settings.gradle.kts || \
+          test -f android/settings.gradle
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -24,45 +41,27 @@ jobs:
       - name: Check Android SDK
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -la "$ANDROID_HOME"
           java -version
-
-      - name: Install Android SDK packages
-        run: |
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -1)
-          fi
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "Android SDK Manager not found"
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses || true
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build WiFi Guardian APK
+      - name: Build Debug APK
         run: |
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
+          if [ -f gradlew ]; then
+            chmod +x gradlew
             ./gradlew --no-daemon assembleDebug
           else
             gradle --no-daemon assembleDebug
           fi
 
-      - name: Upload APK
+      - name: Verify generated APK
+        run: |
+          find app/build/outputs/apk -name "*.apk"
+
+      - name: Upload WiFi Guardian APK
         uses: actions/upload-artifact@v4
         with:
-          name: WiFiGuardian-APK
-          path: app/build/outputs/apk/debug/*.apk
+          name: WiFiGuardian-v06-APK
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
