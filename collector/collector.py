@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Consent-based HTTP CONNECT proxy + WiFi Guardian traffic-counter endpoint.
-Only an explicitly allowlisted client IP is accepted. No TLS decryption, no MITM.
+Only explicitly allowlisted client IPs are accepted. No TLS decryption, no MITM.
 """
 import argparse
 import ipaddress
@@ -16,24 +16,33 @@ from urllib.parse import urlsplit
 class Counters:
     def __init__(self):
         self.lock = threading.Lock()
-        self.up = 0
-        self.down = 0
-        self.sessions = 0
-    def add(self, direction, count):
+        self.devices = {}
+    def add(self, direction, count, client_ip='default'):
         with self.lock:
-            if direction == 'up': self.up += count
-            else: self.down += count
-    def snapshot(self):
+            counters = self.devices.setdefault(client_ip, {'up': 0, 'down': 0, 'sessions': 0})
+            counters[direction] += count
+    def snapshot(self, client_ip='default'):
         with self.lock:
-            return self.up, self.down, self.sessions
-    def session(self):
-        with self.lock: self.sessions += 1
+            counters = self.devices.get(client_ip, {})
+            return counters.get('up', 0), counters.get('down', 0), counters.get('sessions', 0)
+    def session(self, client_ip='default'):
+        with self.lock:
+            counters = self.devices.setdefault(client_ip, {'up': 0, 'down': 0, 'sessions': 0})
+            counters['sessions'] += 1
 
 def build_handlers(config, counters):
+    clients = getattr(config, 'clients', None) or {
+        config.client_ip: {
+            'id': config.device_id,
+            'name': config.device_name,
+            'type': config.device_type,
+        }
+    }
+
     class ProxyHandler(socketserver.BaseRequestHandler):
         def handle(self):
             peer = self.client_address[0]
-            if peer != config.client_ip:
+            if peer not in clients:
                 self.request.sendall(b'HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
                 return
             self.request.settimeout(10)
@@ -80,17 +89,17 @@ def build_handlers(config, counters):
             except (ValueError, OSError, UnicodeDecodeError) as exc:
                 self.request.sendall(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
                 return
-            counters.session()
+            counters.session(peer)
             try:
                 self.request.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
                 if remainder:
                     upstream.sendall(remainder)
-                    counters.add('up', len(remainder))
+                    counters.add('up', len(remainder), peer)
                 self.request.settimeout(None)
                 upstream.settimeout(None)
                 with selectors.DefaultSelector() as selector:
-                    selector.register(self.request, selectors.EVENT_READ, 'up')
-                    selector.register(upstream, selectors.EVENT_READ, 'down')
+                    selector.register(self.request, selectors.EVENT_READ, ('up', peer))
+                    selector.register(upstream, selectors.EVENT_READ, ('down', peer))
                     while True:
                         events = selector.select(timeout=90)
                         if not events: break
@@ -103,7 +112,8 @@ def build_handlers(config, counters):
                                 running = False
                                 break
                             target.sendall(data)
-                            counters.add(key.data, len(data))
+                            direction, client_ip = key.data
+                            counters.add(direction, len(data), client_ip)
                         if not running: break
             except (OSError, ConnectionError, TimeoutError):
                 pass
@@ -115,13 +125,16 @@ def build_handlers(config, counters):
                 self.send_error(404); return
             if not secrets.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + config.token):
                 self.send_error(401); return
-            up, down, sessions = counters.snapshot()
-            blob = json.dumps({'devices': [{
-                'id': config.device_id, 'ip': config.client_ip,
-                'name': config.device_name, 'type': config.device_type,
-                'download_bytes': down, 'upload_bytes': up,
-                'source': 'Opt-in CONNECT proxy'
-            }]}).encode()
+            devices = []
+            for client_ip, device in clients.items():
+                up, down, _ = counters.snapshot(client_ip)
+                devices.append({
+                    'id': device['id'], 'ip': client_ip,
+                    'name': device['name'], 'type': device['type'],
+                    'download_bytes': down, 'upload_bytes': up,
+                    'source': 'Opt-in CONNECT proxy'
+                })
+            blob = json.dumps({'devices': devices}).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Cache-Control', 'no-store')
@@ -144,7 +157,7 @@ def start(config):
     thread = threading.Thread(target=proxy.serve_forever, daemon=True)
     thread.start()
     print('WiFi Guardian approved-device proxy')
-    print(f'Proxy: {config.bind}:{proxy.server_address[1]} (client IP {config.client_ip} only)')
+    print(f'Proxy: {config.bind}:{proxy.server_address[1]} (authorized client IPs: {", ".join(config.clients)})')
     print(f'Traffic feed: http://{config.bind}:{api.server_address[1]}/traffic')
     print('Counts HTTPS tunnel bytes only; no encrypted content or other Wi-Fi devices.')
     try: api.serve_forever()
@@ -156,7 +169,9 @@ def start(config):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bind', default='127.0.0.1', help='Mac LAN IPv4; default loopback')
-    parser.add_argument('--client-ip', required=True, help='Explicitly authorized test device IPv4')
+    parser.add_argument('--client-ip', help='Explicitly authorized test device IPv4 (single-device compatibility mode)')
+    parser.add_argument('--client', action='append', metavar='IP,ID,NAME,TYPE',
+                        help='Explicitly authorize one device; repeat for additional opted-in devices')
     parser.add_argument('--device-id', default='authorized-phone')
     parser.add_argument('--device-name', default='Test Phone')
     parser.add_argument('--device-type', choices=['phone','computer','tv','other'], default='phone')
@@ -166,7 +181,38 @@ def parse_args():
     parser.add_argument('--ports', default='443,8443', help='Allowed HTTPS target TCP ports')
     parser.add_argument('--allow-private-targets', action='store_true', help='Only for private test servers; never use on public Wi-Fi')
     options = parser.parse_args()
-    ipaddress.ip_address(options.client_ip)
+    if options.client and options.client_ip:
+        parser.error('Use --client entries or --client-ip, not both')
+    if options.client:
+        clients = {}
+        for entry in options.client:
+            parts = entry.split(',', 3)
+            if len(parts) != 4 or any(not part.strip() for part in parts):
+                parser.error('--client must be IP,ID,NAME,TYPE with all fields filled')
+            client_ip, device_id, device_name, device_type = (part.strip() for part in parts)
+            try:
+                address = ipaddress.ip_address(client_ip)
+                if address.version != 4:
+                    parser.error('--client currently accepts IPv4 addresses only')
+            except ValueError:
+                parser.error(f'Invalid client IPv4 address: {client_ip}')
+            if device_type not in {'phone', 'computer', 'tv', 'other'}:
+                parser.error(f'Invalid device type for {client_ip}: {device_type}')
+            if client_ip in clients:
+                parser.error(f'Duplicate client IP: {client_ip}')
+            clients[client_ip] = {'id': device_id, 'name': device_name, 'type': device_type}
+        options.clients = clients
+    else:
+        if not options.client_ip:
+            parser.error('Specify --client-ip or at least one --client entry')
+        ipaddress.ip_address(options.client_ip)
+        options.clients = {
+            options.client_ip: {
+                'id': options.device_id,
+                'name': options.device_name,
+                'type': options.device_type,
+            }
+        }
     ipaddress.ip_address(options.bind)
     if len(options.token) < 16: parser.error('--token must be at least 16 characters')
     try: options.ports = {int(p.strip()) for p in options.ports.split(',')}

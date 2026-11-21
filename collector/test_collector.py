@@ -65,4 +65,36 @@ class TestCollector(unittest.TestCase):
         self.assertGreaterEqual(data['download_bytes'], 6)
         self.assertIn('proxy', data['source'].lower())
 
+    def test_feed_keeps_counters_separate_for_multiple_clients(self):
+        first_ip = '192.168.1.106'
+        second_ip = '192.168.1.107'
+        config = SimpleNamespace(
+            clients={
+                first_ip: {'id': 'test-phone', 'name': 'Test Phone', 'type': 'phone'},
+                second_ip: {'id': 'test-laptop', 'name': 'Test Laptop', 'type': 'computer'},
+            },
+            token=TOKEN,
+        )
+        counters = Counters()
+        counters.add('up', 25, first_ip)
+        counters.add('down', 80, first_ip)
+        counters.add('up', 7, second_ip)
+        _, api_handler = build_handlers(config, counters)
+        api = ThreadingHTTPServer(('127.0.0.1', 0), api_handler)
+        thread = threading.Thread(target=api.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                'http://127.0.0.1:%d/traffic' % api.server_address[1],
+                headers={'Authorization': 'Bearer ' + TOKEN})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                devices = {device['id']: device for device in json.load(response)['devices']}
+        finally:
+            api.shutdown()
+            api.server_close()
+        self.assertEqual(devices['test-phone']['upload_bytes'], 25)
+        self.assertEqual(devices['test-phone']['download_bytes'], 80)
+        self.assertEqual(devices['test-laptop']['upload_bytes'], 7)
+        self.assertEqual(devices['test-laptop']['download_bytes'], 0)
+
 if __name__ == '__main__': unittest.main(verbosity=2)

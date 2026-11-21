@@ -1,57 +1,58 @@
 # WiFi Guardian v0.6 — opt-in traffic lab
 
-This contains the existing WiFi Guardian Android app (in `android/`), with a **Select a device to monitor** filter, and a tested Python HTTP CONNECT tunnel counter collector (in `collector/`).
+This contains the WiFi Guardian Android app (in `android/`) and a tested, opt-in Python HTTP CONNECT proxy/traffic feed (in `collector/`).
 
 ## What it does and doesn't do
 - The Android **Scan nearby network devices** action is best-effort local discovery: it checks TCP responses, listens for compatible UPnP/SSDP responses, and includes resolved IPv4 neighbors from Android's ARP cache. It supports local IPv4 subnets with up to 1,022 host addresses.
 - The scan shows this phone's manufacturer/model and attempts reverse-DNS hostnames for discovered devices; it also displays a device's MAC address when Android exposes it in the neighbor cache. Other devices do not reliably publish their model/name, so their hostname or MAC may be unavailable or randomized.
 - The main screen prioritizes Wi-Fi discovery. Optional live traffic, router CSV imports, history, and export are grouped under expandable sections.
 - There is no router-independent Android API for enumerating every associated Wi-Fi client. Device isolation, firewalls, stale neighbor entries, or router behavior can hide devices or make results incomplete; a complete list requires a supported router integration.
-- Measures actual byte counts in HTTPS CONNECT tunnels **from a device explicitly configured to use your proxy**. Identifies that device by your chosen label, ID and source IP.
-- Existing WiFi Guardian app fetches `/traffic` and displays live upload/download speeds and totals. App updates about every 3 seconds. Set its filter to the device ID or IP.
+- Live traffic counts HTTPS CONNECT tunnel bytes only, from devices you explicitly configure to use the proxy. The collector can report multiple opted-in devices, each identified by an IP and label.
+- WiFi Guardian fetches the collector's `/traffic` feed and displays upload/download totals and rates. It does not derive traffic counts from its device scan; devices that do not use the proxy need an authorized router traffic-counter integration.
 - Works without router admin on your private lab Wi-Fi. **Does not observe non-participating devices, read encrypted messages, list apps, or force another device's traffic through the proxy.** Apps that ignore system proxy settings won't be measured.
 - Not a universal MITM attack and not a public proxy. Use only on a network and devices you are authorized to test.
 
 ## 1 — Mac: start collector
-With macOS Python 3 installed, find the Mac's Wi-Fi IP using System Settings → Wi-Fi → Details (example `192.168.1.10`), and your **test device's current Wi-Fi IP** (example `192.168.1.106`). The IP may change. Run:
+Install Python 3, find the Mac's Wi-Fi IP (example `192.168.1.10`) and the current Wi-Fi IP for each test device. A DHCP reservation helps keep device addresses stable. Generate a random token and start the collector:
 
 ```bash
 cd collector
-python3 -c 'import secrets; print(secrets.token_urlsafe(24))'
+TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+printf 'Enter this token in WiFi Guardian: %s\n' "$TOKEN"
 python3 collector.py \
  --bind 192.168.1.10 \
- --client-ip 192.168.1.106 \
- --device-id my-test-phone \
- --device-name 'My Test Phone' \
- --device-type phone \
- --token YOUR_RANDOM_TOKEN
+ --client 192.168.1.106,my-test-phone,'My Test Phone',phone \
+ --client 192.168.1.107,my-laptop,'My Laptop',computer \
+ --token "$TOKEN"
 ```
 
-Use the generated token, not the placeholder. No third-party Python packages needed. Ports 8888 (proxy) and 8088 (feed) must be reachable from your test devices on the same trusted Wi-Fi. Do not forward these ports to the internet. Keep the token private; HTTP on the LAN is not encrypted. Don't use public Wi-Fi.
+Add one `--client IP,ID,NAME,TYPE` entry for each device that has explicitly opted in. Repeat the flag as needed; supported types are `phone`, `computer`, `tv`, and `other`. Do not use commas in a device name. The older single-device `--client-ip` options remain supported. No third-party Python packages are needed. Ports 8888 (proxy) and 8088 (feed) must be reachable on your trusted Wi-Fi. Do not forward them to the internet; do not use public Wi-Fi. The feed uses an auth token, but HTTP on the LAN is not encrypted.
 
-## 2 — Test device: opt into proxy
-On a phone or computer that **you own or have explicit authorization to monitor**, connect to the same trusted Wi-Fi. In that device's Wi-Fi proxy settings, choose **Manual** proxy and specify:
+## 2 — Each test device: explicitly opt into the proxy
+On each phone or computer that **you own or have explicit authorization to monitor**, connect to the same trusted Wi-Fi. Open that device's Wi-Fi network settings, choose **Manual** proxy, and set:
 - Proxy server: Mac Wi-Fi IP (example `192.168.1.10`)
 - Proxy port: `8888`
 
-Browse an HTTPS website on that test device. Some apps will bypass an HTTP proxy; their traffic will not appear. Unset the proxy after testing. **Don't install TLS interception certificates**, and do not enter sensitive information while testing with a proxy.
+Browse an HTTPS website on the device. Its current IP must match the corresponding `--client` entry. Some apps bypass Wi-Fi proxy settings and will not be counted. This collector counts only HTTPS CONNECT tunnel bytes, not all network traffic. Unset the proxy after testing. **Do not install TLS interception certificates** or enter sensitive information while testing.
 
-## 3 — Redmi: view actual traffic
-Install the APK built from `android/` using GitHub Actions. In WiFi Guardian:
-1. Tap **Configure traffic data source**.
-2. Endpoint: `http://192.168.1.10:8088/traffic` (replace with your Mac's LAN IP).
-3. Bearer token: use the exact token passed to `collector.py`.
-4. Tap **Start live monitoring**.
-5. Tap **Select a device to monitor** and enter `my-test-phone` (or the test device IP).
+## 3 — Redmi: view the counters
+Install the APK built from `android/` using GitHub Actions. In WiFi Guardian, expand **Live traffic**:
+1. Tap **Set up traffic source**.
+2. Enter `http://192.168.1.10:8088/traffic`, replacing the example with your Mac's Wi-Fi IP.
+3. Enter the exact token printed in step 1. The token stays in app memory only, so enter it again after restarting the app.
+4. Save, then tap **Start monitoring**.
+5. To see one device only, tap **Choose a device** and enter its ID (for example `my-test-phone`) or IP.
 
-The first poll shows cumulative values; the second and later polls produce bytes/second. Download/upload are from the test device's perspective.
+The first poll shows cumulative bytes; later polls calculate bytes per second. Download/upload are from each test device's perspective. If the feed says HTTP 401, check the token. If it times out or refuses the connection, check that the collector is running, both devices use the same Wi-Fi, the endpoint IP is correct, the Mac firewall permits ports 8088 and 8888, and the test device's IP matches its `--client` entry.
 
-**If the Redmi itself is your only Android phone:** You can use your Mac as the explicitly configured test client and another machine as the collector, or run collector and a locally configured test client on the Mac, but the APK still requires a reachable collector at a LAN IP. The same device cannot be both a transparent all-network monitor and an ordinary Wi-Fi client.
+**Important:** this proxy method requires each device to opt in and counts only traffic that honors the proxy. To measure all traffic from clients without configuring their proxy, WiFi Guardian needs a supported router traffic-counter/API integration. A generic Android app cannot passively read every Wi-Fi client's traffic.
+
+**If the Redmi itself is a device you want to monitor:** configure its Wi-Fi proxy to use the Mac collector and include the Redmi's current IP as a `--client`. The app's feed connection goes directly to the collector; browser/app traffic is counted only if that app honors the Wi-Fi proxy.
 
 ## Tests run for this package
 Run `cd collector && python3 test_collector.py` to repeat Python integration tests. Those tests start local echo and proxy servers, tunnel bytes, assert real counters and ID fields, reject unapproved ports, and require authentication for `/traffic`.
 
-**Not tested:** Real Android APK compilation, Android 11 execution, Wi-Fi client discovery on the Redmi, macOS firewall behavior, or end-to-end traffic on a physical phone. The collector is a narrow prototype, not a hardened production proxy; no authentication is needed to access the proxy *only* because it strictly allows one client IP on your trusted lab network. That source-IP control is not strong authentication and is unsuitable for untrusted networks.
+**Not tested:** Real Android APK compilation, Android 11 execution, Wi-Fi client discovery on the Redmi, macOS firewall behavior, or end-to-end traffic on a physical phone. The collector is a narrow prototype, not a hardened production proxy; it restricts proxy access to explicitly listed source IPs, but source-IP checks are not strong authentication and are unsuitable for untrusted networks.
 
 ## GitHub Actions
 Copy the **contents** of `android/` to the root of your WiFiGuardian Git repository, including `.github/workflows/build-apk.yml`. The Actions build produces a debug APK artifact if the Android Gradle build succeeds. The collector must be run separately on your Mac; it is not part of the APK.
