@@ -249,19 +249,13 @@ class MainActivity : Activity() {
         })
         root.addView(gap(20))
 
-        root.addView(expandableSection("Termux network tools",
-            "Open a terminal or run a diagnostic on your Wi-Fi gateway") {
-            addView(small("Requires the separate Termux app. Set up access once, then run a short ping or port check. Results open in Termux."))
+        root.addView(expandableSection("Built-in terminal",
+            "Run Android shell commands inside WiFi Guardian") {
+            addView(small("Uses the phone's built-in shell with this app's permissions. It does not include Termux packages or root access."))
             addView(gap(8))
-            addView(secondaryButton("Termux setup instructions") { showTermuxSetup() })
-            addView(gap(8))
-            addView(secondaryButton("Open Termux terminal") {
-                if (!TermuxBridge.open(this@MainActivity)) showTermuxSetup()
+            addView(mainButton("Open terminal") {
+                startActivity(Intent(this@MainActivity, TerminalActivity::class.java))
             })
-            addView(gap(8))
-            addView(secondaryButton("Ping my Wi-Fi gateway") { runTermuxDiagnostic(false) })
-            addView(gap(8))
-            addView(secondaryButton("Check gateway's common ports") { runTermuxDiagnostic(true) })
         })
         root.addView(gap(20))
 
@@ -308,27 +302,6 @@ class MainActivity : Activity() {
     }
 
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-
-    private fun showTermuxSetup() {
-        AlertDialog.Builder(this).setTitle("Set up Termux")
-            .setMessage("1. Install Termux from its official F-Droid or GitHub release, then open it once.\n\n2. In Termux run: pkg update && pkg install nmap\n\n3. In Termux, set allow-external-apps=true in ~/.termux/termux.properties, then restart Termux.\n\n4. In Android Settings → Apps → WiFi Guardian → Permissions → Additional permissions, allow Run commands in Termux environment.\n\nOnly use network checks on networks you administer or have permission to test. The terminal and results stay in Termux. Termux does not give WiFi Guardian access to other devices' traffic.")
-            .setPositiveButton("Open Termux") { _, _ ->
-                if (!TermuxBridge.open(this)) toast("Install Termux from F-Droid or the official Termux GitHub release first.")
-            }
-            .setNeutralButton("App permissions") { _, _ -> TermuxBridge.permissionSettings(this) }
-            .setNegativeButton("Close", null).show()
-    }
-
-    private fun runTermuxDiagnostic(ports: Boolean) {
-        val target = gateway
-        if (target.isNullOrBlank()) { toast("Connect to Wi-Fi with a gateway first."); return }
-        if (!TermuxBridge.installed(this) || !TermuxBridge.hasPermission(this)) {
-            showTermuxSetup(); return
-        }
-        if (!TermuxBridge.runGatewayDiagnostic(this, target, ports)) {
-            toast("Could not start Termux. Check its setup and permissions.")
-        }
-    }
 
     private data class NetworkInfo(val ip: String, val prefix: Int, val gateway: String?)
 

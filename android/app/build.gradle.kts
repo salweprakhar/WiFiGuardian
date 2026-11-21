@@ -36,7 +36,7 @@ android {
         minSdk = 26
         targetSdk = 28
         versionCode = 8
-        versionName = "0.8-termux-tools"
+        versionName = "0.8-built-in-terminal"
     }
 
     compileOptions {

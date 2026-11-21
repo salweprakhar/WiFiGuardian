@@ -1,21 +1,19 @@
-# WiFi Guardian v0.8 — device traffic monitoring and Termux tools
+# WiFi Guardian v0.8 — device traffic monitoring and built-in terminal
 
-## Termux network tools
+## Built-in terminal
 
-WiFi Guardian can open the separate Termux terminal and launch two fixed checks
-against the current Wi-Fi gateway: a four-packet ping and a TCP check of 20 common
-ports with Nmap. Results appear in Termux. WiFi Guardian does not install Termux,
-download packages, accept arbitrary shell commands, or read the terminal output.
+Tap **Built-in terminal → Open terminal** to run Android shell commands inside
+WiFi Guardian. The shell starts in the app's private files directory and can use
+commands available on that phone, such as `pwd`, `ls`, `id`, or sometimes `ping`.
+Commands retain their working directory and shell variables until the terminal
+screen closes or the shell restarts. Output is limited to the latest 100,000
+characters and is not saved. The screen has Run, Clear, Restart shell and Close.
 
-Install Termux from its [official F-Droid or GitHub release](https://github.com/termux/termux-app#installation),
-open it once, then run `pkg update && pkg install nmap`. In Termux set
-`allow-external-apps=true` in `~/.termux/termux.properties` and restart it.
-In Android Settings, grant WiFi Guardian the additional permission **Run commands
-in Termux environment**. Open **Termux network tools** in WiFi Guardian for the
-setup instructions and diagnostic buttons. The integration uses Termux's documented
-[RUN_COMMAND intent](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent).
-Only run checks on networks you administer or are authorized to test. Installing
-Termux does not reveal other devices' traffic on arbitrary Wi-Fi networks.
+This is a basic command console, not the full Termux distribution: it has no PTY,
+interactive terminal programs, `pkg` package manager, preinstalled Nmap, root
+access, or access to other apps' private files. A full Termux equivalent would
+require bundling and maintaining its terminal emulator and package environment.
+Only run network checks on networks you administer or are authorized to test.
 
 This contains the WiFi Guardian Android app (`android/`), an opt-in Python HTTPS
 CONNECT proxy and a Linux/OpenWrt router collector (`collector/`). Both collectors
