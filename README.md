@@ -3,6 +3,8 @@
 This contains the existing WiFi Guardian Android app (in `android/`), with a **Select a device to monitor** filter, and a tested Python HTTP CONNECT tunnel counter collector (in `collector/`).
 
 ## What it does and doesn't do
+- The Android **Scan nearby network devices** action is best-effort local discovery: it checks TCP responses, listens for compatible UPnP/SSDP responses, and includes resolved IPv4 neighbors from Android's ARP cache. It supports local IPv4 subnets with up to 1,022 host addresses.
+- There is no router-independent Android API for enumerating every associated Wi-Fi client. Device isolation, firewalls, stale neighbor entries, or router behavior can hide devices or make results incomplete; a complete list requires a supported router integration.
 - Measures actual byte counts in HTTPS CONNECT tunnels **from a device explicitly configured to use your proxy**. Identifies that device by your chosen label, ID and source IP.
 - Existing WiFi Guardian app fetches `/traffic` and displays live upload/download speeds and totals. App updates about every 3 seconds. Set its filter to the device ID or IP.
 - Works without router admin on your private lab Wi-Fi. **Does not observe non-participating devices, read encrypted messages, list apps, or force another device's traffic through the proxy.** Apps that ignore system proxy settings won't be measured.

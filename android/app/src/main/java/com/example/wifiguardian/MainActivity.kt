@@ -136,7 +136,7 @@ class MainActivity : Activity() {
         status = label("Checking Wi-Fi connection...", 15f, true)
         netCard.addView(status)
         netCard.addView(gap(9))
-        netCard.addView(small("Only devices responding to discovery can be shown. This is not a full router client list."))
+        netCard.addView(small("Shows devices this phone can discover on the LAN. A router-independent scan cannot provide the complete connected-device list."))
         root.addView(netCard)
         root.addView(gap(14))
 
@@ -240,6 +240,41 @@ class MainActivity : Activity() {
 
     private data class NetworkInfo(val ip: String, val prefix: Int, val gateway: String?)
 
+    private fun ipv4Value(address: String): Long? {
+        val octets = address.split(".")
+        if (octets.size != 4) return null
+        var value = 0L
+        octets.forEach { part ->
+            val octet = part.toIntOrNull()?.takeIf { it in 0..255 } ?: return null
+            value = (value shl 8) or octet.toLong()
+        }
+        return value
+    }
+
+    private fun ipv4Address(value: Long): String =
+        (3 downTo 0).joinToString(".") { shift -> ((value shr (shift * 8)) and 0xff).toString() }
+
+    private fun isInSubnet(address: String, info: NetworkInfo): Boolean {
+        val candidate = ipv4Value(address) ?: return false
+        val local = ipv4Value(info.ip) ?: return false
+        if (info.prefix !in 1..30) return false
+        val hostMask = (1L shl (32 - info.prefix)) - 1
+        val networkMask = 0xFFFFFFFFL xor hostMask
+        return (candidate and networkMask) == (local and networkMask)
+    }
+
+    private fun subnetHosts(info: NetworkInfo): List<String>? {
+        val local = ipv4Value(info.ip) ?: return null
+        if (info.prefix !in 1..30) return null
+        val hostBits = 32 - info.prefix
+        val hostMask = (1L shl hostBits) - 1
+        val hostCount = hostMask - 1
+        if (hostCount > 1022) return null
+        val networkMask = 0xFFFFFFFFL xor hostMask
+        val network = local and networkMask
+        return (network + 1 until network + 1 + hostCount).map(::ipv4Address)
+    }
+
     private fun networkInfo(): NetworkInfo? {
         val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         // Prefer an active Wi-Fi network. A VPN may hide Wi-Fi from activeNetwork.
@@ -308,31 +343,52 @@ class MainActivity : Activity() {
         return discovered
     }
 
+    private fun readArpNeighbors(info: NetworkInfo): Set<String> {
+        return try {
+            java.io.File("/proc/net/arp").useLines { lines ->
+                lines.drop(1).mapNotNull { line ->
+                    val columns = line.trim().split(Regex("\\s+"))
+                    if (columns.size < 6) return@mapNotNull null
+                    val ip = columns[0]
+                    val flags = columns[2].removePrefix("0x").toIntOrNull(16) ?: 0
+                    val mac = columns[3]
+                    if (isInSubnet(ip, info) && ip != info.ip && ip != info.gateway &&
+                        (flags and 0x2) != 0 &&
+                        mac != "00:00:00:00:00:00") ip else null
+                }.toSet()
+            }
+        } catch (e: java.io.IOException) {
+            android.util.Log.w("WiFiGuardian", "Could not read the IPv4 neighbor cache", e)
+            emptySet()
+        } catch (e: SecurityException) {
+            android.util.Log.w("WiFiGuardian", "Access to the IPv4 neighbor cache was denied", e)
+            emptySet()
+        }
+    }
+
     private fun scan() {
         refreshNetworkInfo()
         val info = networkInfo() ?: run { toast("Connect to a Wi-Fi network first"); return }
-        if (info.prefix != 24) {
-            status.text = "This release scans /24 networks only. Detected: ${info.ip}/${info.prefix}"
+        val hosts = subnetHosts(info)
+        if (hosts == null) {
+            status.text = "This network is too large for this scan (maximum 1,022 host addresses): ${info.ip}/${info.prefix}"
             return
         }
-        val parts = info.ip.split(".")
-        if (parts.size != 4) return
-        val base = parts.take(3).joinToString(".")
         scanButton.isEnabled = false
         scanButton.text = "Scanning devices..."
         progress.progress = 0
+        progress.max = hosts.size
         progress.visibility = View.VISIBLE
         results.removeAllViews()
-        summary.text = "Scanning $base.0/24 ..."
+        summary.text = "Scanning ${info.ip}/${info.prefix} ..."
         bg.execute {
             val found = java.util.Collections.synchronizedList(mutableListOf<Pair<String, String>>())
             // SSDP replies provide an additional discovery signal for compatible devices.
-            val ssdpHosts = discoverSsdp().filter { it.startsWith("$base.") }.toSet()
+            val ssdpHosts = discoverSsdp().filter { isInSubnet(it, info) }.toSet()
             ssdpHosts.forEach { found.add(it to "UPnP/SSDP responding") }
             val done = AtomicInteger(0)
-            val jobs = (1..254).map { i ->
+            val jobs = hosts.map { host ->
                 probes.submit {
-                    val host = "$base.$i"
                     val role = when (host) {
                         info.ip -> "This phone"
                         info.gateway -> "Gateway (router)"
@@ -340,14 +396,21 @@ class MainActivity : Activity() {
                     }
                     if (host == info.ip || host == info.gateway || reachable(host)) found.add(host to role)
                     val progress = done.incrementAndGet()
-                    if (progress % 20 == 0 || progress == 254) runOnUiThread {
-                        summary.text = "Checking addresses... $progress / 254"
+                    if (progress % 20 == 0 || progress == hosts.size) runOnUiThread {
+                        summary.text = "Checking addresses... $progress / ${hosts.size}"
                         this.progress.progress = progress
                     }
                 }
             }
             jobs.forEach { try { it.get(40, TimeUnit.SECONDS) } catch (_: Exception) { it.cancel(true) } }
-            val sorted = found.distinctBy { it.first }.sortedWith(compareBy { it.first.substringAfterLast('.').toIntOrNull() ?: 999 })
+            val knownIps = synchronized(found) { found.map { it.first }.toSet() }
+            readArpNeighbors(info).filterNot { it in knownIps }.forEach {
+                found.add(it to "LAN neighbor cache")
+            }
+            val sorted = synchronized(found) {
+                found.distinctBy { it.first }
+                    .sortedWith(compareBy { ipv4Value(it.first) ?: Long.MAX_VALUE })
+            }
             val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
             val previous = prefs.getString("last_ips", "")?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
             val current = sorted.map { it.first }.toSet()
@@ -370,6 +433,7 @@ class MainActivity : Activity() {
                         "This phone" -> "Your Redmi phone"
                         "Gateway (router)" -> "Wi-Fi router"
                         "UPnP/SSDP responding" -> "Smart / media device"
+                        "LAN neighbor cache" -> "LAN neighbor"
                         else -> "Network device"
                     }
                     row.addView(label("$heading${if (ip in newIps) "  • NEW" else ""}", 16f, true))
