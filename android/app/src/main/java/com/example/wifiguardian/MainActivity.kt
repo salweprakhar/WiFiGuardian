@@ -64,9 +64,16 @@ class MainActivity : Activity() {
     private var liveSessionToken = "" // Session only; never saved in preferences.
     private var previousLive: Map<String, LiveDevice> = emptyMap()
     private var previousLiveTimeMs = 0L
+    private var previousSession = ""
+    private var liveGeneration = 0
+    private data class LiveConnection(
+        val host: String, val port: Int, val protocol: String, val service: String,
+        val rx: Long, val tx: Long, val active: Boolean
+    )
     private data class LiveDevice(
         val id: String, val ip: String, val name: String, val kind: String,
-        val rx: Long, val tx: Long, val source: String
+        val rx: Long, val tx: Long, val source: String,
+        val active: Int, val connectionCount: Int, val connections: List<LiveConnection>
     )
     private val liveTick = object : Runnable {
         override fun run() {
@@ -166,7 +173,7 @@ class MainActivity : Activity() {
         val header = card().apply { background = rounded(Color.rgb(16, 39, 78), 20) }
         header.addView(label("WiFi Guardian", 27f, true).apply { setTextColor(Color.WHITE) })
         header.addView(gap(5))
-        header.addView(label("See devices this phone can find on your Wi-Fi", 14f).apply { setTextColor(Color.rgb(194, 218, 251)) })
+        header.addView(label("Discover devices and view supported network traffic", 14f).apply { setTextColor(Color.rgb(194, 218, 251)) })
         root.addView(header)
         root.addView(gap(16))
 
@@ -178,6 +185,14 @@ class MainActivity : Activity() {
         netCard.addView(gap(9))
         netCard.addView(small("Discovery is best-effort. Some routers or devices may hide from scans."))
         root.addView(netCard)
+        root.addView(gap(14))
+
+        val coverageCard = card()
+        coverageCard.addView(label("Can I see other devices’ traffic?", 17f, true))
+        coverageCard.addView(gap(6))
+        coverageCard.addView(small("Joining Wi-Fi does not give this phone access to other devices’ traffic. Use a compatible router collector, or configure each device to use the proxy."))
+        coverageCard.addView(secondaryButton("Monitoring options") { showMonitoringOptions() })
+        root.addView(coverageCard)
         root.addView(gap(14))
 
         scanButton = mainButton("Find devices on this Wi-Fi") { scan() }
@@ -212,12 +227,12 @@ class MainActivity : Activity() {
 
         root.addView(expandableSection(
             "Live traffic",
-            "Optional • Needs traffic data from your router or collector"
+            "Per-device usage and destinations • Requires a traffic source"
         ) {
             liveSummary = label("Not set up", 15f, true)
             addView(liveSummary)
             addView(gap(8))
-            addView(small("This is separate from finding devices. Configure a trusted data source to view per-device usage."))
+            addView(small("See which destinations devices connect to, their protocols and byte counts. Coverage depends on your router or proxy. Encrypted content is not visible."))
             addView(gap(10))
             addView(secondaryButton("Set up traffic source") { configureLive() })
             addView(gap(8))
@@ -231,6 +246,22 @@ class MainActivity : Activity() {
             addView(gap(10))
             liveList = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             addView(liveList)
+        })
+        root.addView(gap(20))
+
+        root.addView(expandableSection("Termux network tools",
+            "Open a terminal or run a diagnostic on your Wi-Fi gateway") {
+            addView(small("Requires the separate Termux app. Set up access once, then run a short ping or port check. Results open in Termux."))
+            addView(gap(8))
+            addView(secondaryButton("Termux setup instructions") { showTermuxSetup() })
+            addView(gap(8))
+            addView(secondaryButton("Open Termux terminal") {
+                if (!TermuxBridge.open(this@MainActivity)) showTermuxSetup()
+            })
+            addView(gap(8))
+            addView(secondaryButton("Ping my Wi-Fi gateway") { runTermuxDiagnostic(false) })
+            addView(gap(8))
+            addView(secondaryButton("Check gateway's common ports") { runTermuxDiagnostic(true) })
         })
         root.addView(gap(20))
 
@@ -277,6 +308,27 @@ class MainActivity : Activity() {
     }
 
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+
+    private fun showTermuxSetup() {
+        AlertDialog.Builder(this).setTitle("Set up Termux")
+            .setMessage("1. Install Termux from its official F-Droid or GitHub release, then open it once.\n\n2. In Termux run: pkg update && pkg install nmap\n\n3. In Termux, set allow-external-apps=true in ~/.termux/termux.properties, then restart Termux.\n\n4. In Android Settings → Apps → WiFi Guardian → Permissions → Additional permissions, allow Run commands in Termux environment.\n\nOnly use network checks on networks you administer or have permission to test. The terminal and results stay in Termux. Termux does not give WiFi Guardian access to other devices' traffic.")
+            .setPositiveButton("Open Termux") { _, _ ->
+                if (!TermuxBridge.open(this)) toast("Install Termux from F-Droid or the official Termux GitHub release first.")
+            }
+            .setNeutralButton("App permissions") { _, _ -> TermuxBridge.permissionSettings(this) }
+            .setNegativeButton("Close", null).show()
+    }
+
+    private fun runTermuxDiagnostic(ports: Boolean) {
+        val target = gateway
+        if (target.isNullOrBlank()) { toast("Connect to Wi-Fi with a gateway first."); return }
+        if (!TermuxBridge.installed(this) || !TermuxBridge.hasPermission(this)) {
+            showTermuxSetup(); return
+        }
+        if (!TermuxBridge.runGatewayDiagnostic(this, target, ports)) {
+            toast("Could not start Termux. Check its setup and permissions.")
+        }
+    }
 
     private data class NetworkInfo(val ip: String, val prefix: Int, val gateway: String?)
 
@@ -548,7 +600,7 @@ class MainActivity : Activity() {
             setText(selectedDeviceFilter)
         }
         AlertDialog.Builder(this).setTitle("Choose traffic device")
-            .setMessage("Enter the device ID or IPv4 address shown in the live feed. This does not intercept devices that have not opted in.")
+            .setMessage("Enter a device ID or IP address from the feed. Filtering only changes the view; it cannot add traffic that the source cannot observe.")
             .setView(input)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Apply") { _, _ ->
@@ -563,6 +615,13 @@ class MainActivity : Activity() {
 
     // LIVE TRAFFIC: the phone reads counters exposed by a router or a trusted collector.
     // Ordinary Wi-Fi access does not expose other clients' traffic.
+    private fun showMonitoringOptions() {
+        AlertDialog.Builder(this).setTitle("Choose how to monitor")
+            .setMessage("Router collector\nA compatible Linux/OpenWrt gateway with admin access can report connections for devices using it. Run the included router collector on a computer or gateway, then enter its feed URL and token here. Other router models need their own integration.\n\nDevice proxy\nConfigure each device’s Wi-Fi proxy to the included collector. Only HTTPS connections that use that proxy are measured; destinations can include hostnames.\n\nAny Wi-Fi network\nDevice discovery is best-effort. Without a supported source, other devices’ traffic is unavailable. No mode reveals encrypted messages, page contents or reliable app names.")
+            .setPositiveButton("Set up source") { _, _ -> configureLive() }
+            .setNegativeButton("Close", null).show()
+    }
+
     private fun configureLive() {
         val address = EditText(this).apply {
             setSingleLine(true)
@@ -579,7 +638,7 @@ class MainActivity : Activity() {
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(4), dp(18), 0)
-            addView(small("Enter a trusted LAN endpoint that returns per-device byte counters. The included collector requires its token; it is kept only until this app closes."))
+            addView(small("Enter the /traffic URL from the router collector or device proxy, not the router admin page. The token stays in memory until this app closes. HTTP feeds are for trusted LANs only."))
             addView(address)
             addView(token)
         }
@@ -624,11 +683,13 @@ class MainActivity : Activity() {
         liveSummary.text = "Connecting to traffic source..."
         previousLive = emptyMap()
         previousLiveTimeMs = 0L
+        previousSession = ""
         liveHandler.post(liveTick)
     }
 
     private fun stopLive() {
         liveEnabled = false
+        liveGeneration++
         liveHandler.removeCallbacks(liveTick)
         if (::liveButton.isInitialized) liveButton.text = "Start live monitoring"
     }
@@ -636,6 +697,7 @@ class MainActivity : Activity() {
     private fun fetchLiveTraffic() {
         val endpoint = liveEndpoint
         val token = liveSessionToken
+        val generation = liveGeneration
         bg.execute {
             try {
                 // Wi-Fi sockets are bound to the Wi-Fi network even if a VPN is active.
@@ -648,9 +710,29 @@ class MainActivity : Activity() {
                     connection.connectTimeout = 3500
                     connection.readTimeout = 3500
                     connection.requestMethod = "GET"
-                    if (token.isNotBlank()) connection.setRequestProperty("Authorization", "B" + "e" + "a" + "r" + "e" + "r " + token)
-                    require(connection.responseCode == 200) { "Data source returned HTTP ${connection.responseCode}" }
-                    connection.inputStream.bufferedReader().use { reader -> reader.readText().take(300_000) }
+                    connection.instanceFollowRedirects = false
+                    if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer " + token)
+                    val code = connection.responseCode
+                    if (code != 200) {
+                        val detail = connection.errorStream?.bufferedReader()?.use { reader ->
+                            val buffer = CharArray(1000)
+                            val count = reader.read(buffer)
+                            if (count > 0) String(buffer, 0, count) else ""
+                        }
+                        val reason = if (code == 503) runCatching { JSONObject(detail ?: "").optString("error") }.getOrDefault("") else ""
+                        error(if (reason.isNotBlank()) reason else "Data source returned HTTP $code")
+                    }
+                    connection.inputStream.bufferedReader().use { reader ->
+                        val text = StringBuilder()
+                        val buffer = CharArray(8192)
+                        while (true) {
+                            val count = reader.read(buffer)
+                            if (count < 0) break
+                            require(text.length + count <= 4_000_000) { "Traffic feed too large" }
+                            text.append(buffer, 0, count)
+                        }
+                        text.toString()
+                    }
                 } finally { connection.disconnect() }
                 val root = JSONObject(body)
                 val entries = root.getJSONArray("devices")
@@ -662,15 +744,42 @@ class MainActivity : Activity() {
                     val rx = d.getLong("download_bytes")
                     val tx = d.getLong("upload_bytes")
                     require(rx >= 0 && tx >= 0) { "Traffic counters cannot be negative" }
+                    val connections = d.optJSONArray("connections") ?: JSONArray()
+                    require(connections.length() <= 128) { "Too many connection rows" }
+                    val details = (0 until connections.length()).map { j ->
+                        val c = connections.getJSONObject(j)
+                        val down = c.getLong("download_bytes")
+                        val up = c.getLong("upload_bytes")
+                        val port = c.optInt("port", 0)
+                        require(down >= 0 && up >= 0 && port in 0..65535) { "Invalid connection counters or port" }
+                        LiveConnection(c.getString("host").take(253), port,
+                            c.optString("protocol", "Unknown").take(20), c.optString("service", "Unclassified").take(100),
+                            down, up, c.optBoolean("active", false))
+                    }
                     LiveDevice(id, d.optString("ip"), d.optString("name", "Unnamed device"),
                         categoryOf(d.optString("type", "other")), rx, tx,
-                        d.optString("source", "Router/collector"))
+                        d.optString("source", "Router/collector"), d.optInt("active_connections", 0),
+                        d.optInt("connections_total", details.size), details)
                 }
-                val measuredAt = System.currentTimeMillis()
-                runOnUiThread { if (liveEnabled) renderLive(devices, measuredAt) }
+                require(devices.map { it.id }.distinct().size == devices.size) { "Duplicate device identifiers" }
+                val measuredAt = root.optLong("observed_at_ms", System.currentTimeMillis())
+                val session = root.optString("session_id", "legacy")
+                val coverage = root.optString("coverage", "Coverage is not declared by this source")
+                val warnings = root.optJSONArray("warnings") ?: JSONArray()
+                val notes = (0 until minOf(warnings.length(), 8)).map { warnings.optString(it).take(500) }
+                runOnUiThread {
+                    if (liveEnabled && generation == liveGeneration) {
+                        if (session != previousSession || measuredAt < previousLiveTimeMs) {
+                            previousLive = emptyMap()
+                            previousLiveTimeMs = 0L
+                        }
+                        renderLive(devices, measuredAt, coverage, notes, root.optString("source_mode"))
+                        previousSession = session
+                    }
+                }
             } catch (e: Exception) {
                 runOnUiThread {
-                    if (liveEnabled) {
+                    if (liveEnabled && generation == liveGeneration) {
                         liveSummary.text = "Live feed unavailable: ${e.message ?: "Unknown error"}"
                         liveList.removeAllViews()
                         previousLive = emptyMap()
@@ -678,7 +787,7 @@ class MainActivity : Activity() {
                     }
                 }
             } finally {
-                runOnUiThread { if (liveEnabled) liveHandler.postDelayed(liveTick, 3000L) }
+                runOnUiThread { if (liveEnabled && generation == liveGeneration) liveHandler.postDelayed(liveTick, 3000L) }
             }
         }
     }
@@ -692,23 +801,23 @@ class MainActivity : Activity() {
         else -> "Other Devices"
     }
 
-    private fun renderLive(devices: List<LiveDevice>, now: Long) {
+    private fun renderLive(devices: List<LiveDevice>, now: Long, coverage: String, warnings: List<String>, mode: String) {
         liveList.removeAllViews()
         val shownDevices = if (selectedDeviceFilter.isBlank()) devices else devices.filter {
             it.id.equals(selectedDeviceFilter, ignoreCase = true) || it.ip == selectedDeviceFilter
         }
         val seconds = if (previousLiveTimeMs == 0L) 0.0 else (now - previousLiveTimeMs) / 1000.0
-        val totalDown = devices.sumOf { it.rx.toDouble() }.toLong()
-        val totalUp = devices.sumOf { it.tx.toDouble() }.toLong()
-        liveSummary.text = "LIVE • ${shownDevices.size} selected / ${devices.size} reported\n↓ ${formatBytes(shownDevices.sumOf { it.rx.toDouble() }.toLong())}  ↑ ${formatBytes(shownDevices.sumOf { it.tx.toDouble() }.toLong())} cumulative\nUpdates about every 3 seconds"
-        if (shownDevices.isEmpty()) liveList.addView(small("No matching device reported. Check the ID/IP, proxy settings and data source."))
+        val sampleTime = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(now))
+        liveSummary.text = "MONITORING • ${shownDevices.size} selected / ${devices.size} reported\n↓ ${formatBytes(shownDevices.sumOf { it.rx.toDouble() }.toLong())}  ↑ ${formatBytes(shownDevices.sumOf { it.tx.toDouble() }.toLong())} observed totals\nSource sample: $sampleTime\n$coverage"
+        warnings.forEach { liveList.addView(small(it)); liveList.addView(gap(6)) }
+        if (shownDevices.isEmpty()) liveList.addView(small("No matching traffic reported. Check the device filter and source setup. A quiet device may not appear in router samples."))
         val categories = listOf("Phones", "Computers", "TV & Media", "Smart Home", "Network Equipment", "Other Devices")
         categories.forEach { cat ->
             val group = shownDevices.filter { it.kind == cat }
             if (group.isNotEmpty()) {
                 liveList.addView(label("$cat (${group.size})", 17f, true))
                 liveList.addView(gap(9))
-                group.forEach { dev ->
+                group.sortedByDescending { it.rx.toDouble() + it.tx.toDouble() }.forEach { dev ->
                     val prior = previousLive[dev.id]
                     val hasRate = prior != null && seconds > 0 && dev.rx >= prior.rx && dev.tx >= prior.tx
                     val downRate = if (hasRate) ((dev.rx - prior!!.rx) / seconds).toLong() else 0L
@@ -718,9 +827,20 @@ class MainActivity : Activity() {
                     item.addView(gap(4))
                     item.addView(small("Device ID: ${dev.id}  •  IP: ${dev.ip.ifBlank { "Unknown" }}"))
                     item.addView(gap(7))
-                    item.addView(label(if (hasRate) "↓ ${formatBytes(downRate)}/s    ↑ ${formatBytes(upRate)}/s" else "Calculating live rates...", 15f, true))
+                    item.addView(label(if (hasRate) "↓ ${formatBytes(downRate)}/s    ↑ ${formatBytes(upRate)}/s" else "Waiting for a new sample to calculate rates", 15f, true))
                     item.addView(gap(5))
                     item.addView(small("Total ↓ ${formatBytes(dev.rx)}  ↑ ${formatBytes(dev.tx)}  •  ${dev.source}"))
+                    item.addView(gap(8))
+                    item.addView(label("${dev.active} ${if (mode == "router") "tracked connections" else "open tunnels"}", 14f, true))
+                    dev.connections.take(12).forEach { c ->
+                        val host = if (c.host.contains(':')) "[${c.host}]" else c.host
+                        val destination = if (c.port > 0) "$host:${c.port}" else host
+                        item.addView(gap(7))
+                        item.addView(label(destination, 14f, true))
+                        item.addView(small("${c.protocol} • ${c.service} • ${if (c.active) "Tracked" else "Closed"}\n↓ ${formatBytes(c.rx)}  ↑ ${formatBytes(c.tx)}"))
+                    }
+                    if (dev.connections.isEmpty()) item.addView(small("No connection details in this sample."))
+                    if (dev.connectionCount > 12) item.addView(small("Showing 12 of ${dev.connectionCount} connection records."))
                     liveList.addView(item)
                     liveList.addView(gap(9))
                 }

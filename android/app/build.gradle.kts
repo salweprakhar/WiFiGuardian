@@ -35,8 +35,8 @@ android {
         applicationId = "com.example.wifiguardian"
         minSdk = 26
         targetSdk = 28
-        versionCode = 6
-        versionName = "0.6-consent-proxy"
+        versionCode = 8
+        versionName = "0.8-termux-tools"
     }
 
     compileOptions {

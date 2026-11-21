@@ -4,31 +4,77 @@ Only explicitly allowlisted client IPs are accepted. No TLS decryption, no MITM.
 """
 import argparse
 import ipaddress
-import json
 import secrets
 import selectors
 import socket
 import socketserver
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+import time
+from http.server import ThreadingHTTPServer
+from traffic_feed import api_handler, service_hint
 
 class Counters:
     def __init__(self):
         self.lock = threading.Lock()
         self.devices = {}
-    def add(self, direction, count, client_ip='default'):
+        self.connections = {}
+        self.session_id = secrets.token_hex(16)
+    def add(self, direction, count, client_ip='default', connection_id=None):
         with self.lock:
             counters = self.devices.setdefault(client_ip, {'up': 0, 'down': 0, 'sessions': 0})
             counters[direction] += count
+            connection = self.connections.get(client_ip, {}).get(connection_id)
+            if connection is not None:
+                connection['upload_bytes' if direction == 'up' else 'download_bytes'] += count
+                connection['last_seen_ms'] = int(time.time() * 1000)
     def snapshot(self, client_ip='default'):
         with self.lock:
             counters = self.devices.get(client_ip, {})
             return counters.get('up', 0), counters.get('down', 0), counters.get('sessions', 0)
-    def session(self, client_ip='default'):
+    def session(self, client_ip='default', host='', port=0):
         with self.lock:
             counters = self.devices.setdefault(client_ip, {'up': 0, 'down': 0, 'sessions': 0})
             counters['sessions'] += 1
+            connection_id = counters['sessions']
+            connections = self.connections.setdefault(client_ip, {})
+            # Bound stored details; device counters still include every tunnel.
+            if len(connections) >= 128:
+                oldest = min(connections, key=lambda key: (connections[key]['active'], connections[key]['last_seen_ms']))
+                del connections[oldest]
+            connections[connection_id] = {
+                'host': host, 'port': port, 'protocol': 'TCP',
+                'service': service_hint('tcp', port), 'active': True,
+                'upload_bytes': 0, 'download_bytes': 0,
+                'last_seen_ms': int(time.time() * 1000),
+            }
+            counters['active'] = counters.get('active', 0) + 1
+            return connection_id
+
+    def close(self, client_ip, connection_id):
+        with self.lock:
+            self.devices[client_ip]['active'] -= 1
+            connection = self.connections.get(client_ip, {}).get(connection_id)
+            if connection is not None:
+                connection['active'] = False
+
+    def feed(self, clients):
+        with self.lock:
+            devices = []
+            for client_ip, device in clients.items():
+                counts = self.devices.get(client_ip, {})
+                connections = sorted(self.connections.get(client_ip, {}).values(),
+                                     key=lambda c: (c['active'], c['last_seen_ms']), reverse=True)
+                devices.append(dict(device, ip=client_ip,
+                    upload_bytes=counts.get('up', 0), download_bytes=counts.get('down', 0),
+                    source='Opt-in CONNECT proxy', active_connections=counts.get('active', 0),
+                    connections_total=len(connections), connections=[dict(c) for c in connections[:12]]))
+            return {
+                'schema_version': 2, 'session_id': self.session_id,
+                'observed_at_ms': int(time.time() * 1000), 'source_mode': 'proxy',
+                'coverage': 'Only HTTPS CONNECT traffic from devices configured to use this proxy',
+                'warnings': ['Apps that bypass the proxy are not measured. Destinations do not reveal encrypted content.'],
+                'devices': devices,
+            }
 
 def build_handlers(config, counters):
     clients = getattr(config, 'clients', None) or {
@@ -89,12 +135,12 @@ def build_handlers(config, counters):
             except (ValueError, OSError, UnicodeDecodeError) as exc:
                 self.request.sendall(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
                 return
-            counters.session(peer)
+            connection_id = counters.session(peer, host.lower(), port)
             try:
                 self.request.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
                 if remainder:
                     upstream.sendall(remainder)
-                    counters.add('up', len(remainder), peer)
+                    counters.add('up', len(remainder), peer, connection_id)
                 self.request.settimeout(None)
                 upstream.settimeout(None)
                 with selectors.DefaultSelector() as selector:
@@ -113,37 +159,14 @@ def build_handlers(config, counters):
                                 break
                             target.sendall(data)
                             direction, client_ip = key.data
-                            counters.add(direction, len(data), client_ip)
+                            counters.add(direction, len(data), client_ip, connection_id)
                         if not running: break
             except (OSError, ConnectionError, TimeoutError):
                 pass
             finally:
+                counters.close(peer, connection_id)
                 upstream.close()
-    class ApiHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if urlsplit(self.path).path != '/traffic':
-                self.send_error(404); return
-            if not secrets.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + config.token):
-                self.send_error(401); return
-            devices = []
-            for client_ip, device in clients.items():
-                up, down, _ = counters.snapshot(client_ip)
-                devices.append({
-                    'id': device['id'], 'ip': client_ip,
-                    'name': device['name'], 'type': device['type'],
-                    'download_bytes': down, 'upload_bytes': up,
-                    'source': 'Opt-in CONNECT proxy'
-                })
-            blob = json.dumps({'devices': devices}).encode()
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Cache-Control', 'no-store')
-            self.send_header('Content-Length', str(len(blob)))
-            self.end_headers()
-            self.wfile.write(blob)
-        def log_message(self, fmt, *args):
-            pass
-    return ProxyHandler, ApiHandler
+    return ProxyHandler, api_handler(config.token, lambda: counters.feed(clients))
 
 class ThreadedProxy(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
@@ -159,11 +182,10 @@ def start(config):
     print('WiFi Guardian approved-device proxy')
     print(f'Proxy: {config.bind}:{proxy.server_address[1]} (authorized client IPs: {", ".join(config.clients)})')
     print(f'Traffic feed: http://{config.bind}:{api.server_address[1]}/traffic')
-    print('Counts HTTPS tunnel bytes only; no encrypted content or other Wi-Fi devices.')
+    print('Shows CONNECT destinations and tunnel bytes; no encrypted content or non-proxy traffic.')
     try: api.serve_forever()
     except KeyboardInterrupt: pass
     finally:
-        api.shutdown() if False else None
         proxy.shutdown(); api.server_close(); proxy.server_close()
 
 def parse_args():
@@ -214,6 +236,9 @@ def parse_args():
             }
         }
     ipaddress.ip_address(options.bind)
+    if len(options.clients) > 512: parser.error('At most 512 clients are supported')
+    if len({d['id'] for d in options.clients.values()}) != len(options.clients):
+        parser.error('Each client must have a unique device ID')
     if len(options.token) < 16: parser.error('--token must be at least 16 characters')
     try: options.ports = {int(p.strip()) for p in options.ports.split(',')}
     except ValueError: parser.error('Invalid ports list')

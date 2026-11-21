@@ -64,6 +64,30 @@ class TestCollector(unittest.TestCase):
         self.assertGreaterEqual(data['upload_bytes'], 6)
         self.assertGreaterEqual(data['download_bytes'], 6)
         self.assertIn('proxy', data['source'].lower())
+        connection = data['connections'][0]
+        self.assertEqual(connection['host'], '127.0.0.1')
+        self.assertEqual(connection['port'], self.echo.server_address[1])
+        self.assertEqual(connection['protocol'], 'TCP')
+        self.assertEqual(connection['upload_bytes'], 6)
+        self.assertEqual(connection['download_bytes'], 6)
+
+    def test_connection_lifecycle_and_bounded_history_preserve_totals(self):
+        counters = Counters()
+        for i in range(150):
+            connection_id = counters.session('192.168.1.20', 'example.com', 443)
+            counters.add('up', 10, '192.168.1.20', connection_id)
+            counters.close('192.168.1.20', connection_id)
+        active_id = counters.session('192.168.1.20', 'example.org', 443)
+        counters.add('down', 50, '192.168.1.20', active_id)
+        feed = counters.feed({'192.168.1.20': {'id': 'phone', 'name': 'Phone', 'type': 'phone'}})
+        device = feed['devices'][0]
+        self.assertEqual(feed['source_mode'], 'proxy')
+        self.assertEqual(device['upload_bytes'], 1500)
+        self.assertEqual(device['download_bytes'], 50)
+        self.assertEqual(device['active_connections'], 1)
+        self.assertEqual(device['connections'][0]['host'], 'example.org')
+        self.assertEqual(len(device['connections']), 12)
+        self.assertEqual(device['connections_total'], 128)
 
     def test_feed_keeps_counters_separate_for_multiple_clients(self):
         first_ip = '192.168.1.106'
