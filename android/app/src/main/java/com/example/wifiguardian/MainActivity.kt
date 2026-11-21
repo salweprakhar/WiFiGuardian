@@ -10,6 +10,7 @@ import android.net.LinkProperties
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
 import java.net.HttpURLConnection
 import java.net.URL
 import android.net.wifi.WifiManager
@@ -111,6 +112,45 @@ class MainActivity : Activity() {
         setOnClickListener { action() }
     }
 
+    private fun expandableSection(
+        title: String,
+        description: String,
+        content: LinearLayout.() -> Unit
+    ): LinearLayout {
+        val section = card()
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            isFocusable = true
+        }
+        val text = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        text.addView(label(title, 17f, true))
+        text.addView(gap(3))
+        text.addView(small(description))
+        header.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
+        val arrow = label("+", 24f, true).apply {
+            setTextColor(blue)
+            gravity = Gravity.CENTER
+            contentDescription = "Expand section"
+        }
+        header.addView(arrow, LinearLayout.LayoutParams(dp(36), dp(40)))
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }.apply(content)
+        header.setOnClickListener {
+            val expanded = body.visibility != View.VISIBLE
+            body.visibility = if (expanded) View.VISIBLE else View.GONE
+            arrow.text = if (expanded) "−" else "+"
+            arrow.contentDescription = if (expanded) "Collapse section" else "Expand section"
+        }
+        section.addView(header)
+        section.addView(gap(10))
+        section.addView(body)
+        return section
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = Color.rgb(16, 39, 78)
@@ -126,21 +166,21 @@ class MainActivity : Activity() {
         val header = card().apply { background = rounded(Color.rgb(16, 39, 78), 20) }
         header.addView(label("WiFi Guardian", 27f, true).apply { setTextColor(Color.WHITE) })
         header.addView(gap(5))
-        header.addView(label("Your network, at a glance", 14f).apply { setTextColor(Color.rgb(194, 218, 251)) })
+        header.addView(label("See devices this phone can find on your Wi-Fi", 14f).apply { setTextColor(Color.rgb(194, 218, 251)) })
         root.addView(header)
         root.addView(gap(16))
 
         val netCard = card()
-        netCard.addView(small("CURRENT NETWORK"))
+        netCard.addView(small("WI-FI CONNECTION"))
         netCard.addView(gap(8))
         status = label("Checking Wi-Fi connection...", 15f, true)
         netCard.addView(status)
         netCard.addView(gap(9))
-        netCard.addView(small("Shows devices this phone can discover on the LAN. A router-independent scan cannot provide the complete connected-device list."))
+        netCard.addView(small("Discovery is best-effort. Some routers or devices may hide from scans."))
         root.addView(netCard)
         root.addView(gap(14))
 
-        scanButton = mainButton("Scan nearby network devices") { scan() }
+        scanButton = mainButton("Find devices on this Wi-Fi") { scan() }
         root.addView(scanButton, LinearLayout.LayoutParams(-1, dp(54)))
         root.addView(gap(10))
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -150,90 +190,90 @@ class MainActivity : Activity() {
         root.addView(gap(14))
 
         val summaryCard = card()
-        summaryCard.addView(small("SCAN SUMMARY"))
+        summaryCard.addView(small("LATEST SCAN"))
         summaryCard.addView(gap(5))
-        summary = label("No scan yet — tap Scan to begin", 15f, true)
+        summary = label("No scan yet. Tap “Find devices” to get started.", 15f, true)
         summaryCard.addView(summary)
         root.addView(summaryCard)
         root.addView(gap(18))
 
-        root.addView(label("Discovered devices", 21f, true))
+        root.addView(label("Devices found", 21f, true))
         root.addView(gap(5))
-        root.addView(small("Tap Copy IP on any device to copy its address."))
+        root.addView(small("Names and MAC addresses appear only when the network makes them available."))
         root.addView(gap(10))
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(results)
-        emptyState = small("No devices discovered yet. Connect to Wi-Fi and run your first scan.").apply {
+        emptyState = small("Your results will appear here. Connect to Wi-Fi, then tap “Find devices”.").apply {
             setPadding(dp(15), dp(18), dp(15), dp(18))
             background = rounded(Color.WHITE)
         }
         results.addView(emptyState)
         root.addView(gap(20))
 
-        root.addView(label("Live device traffic", 21f, true))
-        root.addView(gap(5))
-        root.addView(small("Requires an authorized router or network collector providing per-device counters."))
-        root.addView(gap(10))
-        val liveCard = card()
-        liveSummary = label("Not configured • No live data", 15f, true)
-        liveCard.addView(liveSummary)
-        liveCard.addView(gap(10))
-        liveCard.addView(secondaryButton("Configure traffic data source") { configureLive() })
-        liveCard.addView(gap(8))
-        liveButton = mainButton("Start live monitoring") { toggleLive() }
-        liveCard.addView(liveButton)
-        liveCard.addView(gap(10))
-        liveCard.addView(secondaryButton("Select a device to monitor") { configureDeviceFilter() })
-        liveCard.addView(gap(6))
-        filterStatus = small("Showing all reported devices")
-        liveCard.addView(filterStatus)
-        root.addView(liveCard)
-        root.addView(gap(10))
-        liveList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(liveList)
-        root.addView(gap(20))
-
-        root.addView(label("Imported traffic reports", 21f, true))
-        root.addView(gap(5))
-        root.addView(small("From authorized router reports — not live capture of other phones."))
-        root.addView(gap(10))
-        val trafficCard = card()
-        trafficSummary = label("No router traffic report imported", 15f, true)
-        trafficCard.addView(trafficSummary)
-        trafficCard.addView(gap(10))
-        trafficCard.addView(mainButton("Import router traffic CSV") { pickTrafficCsv() })
-        trafficCard.addView(gap(8))
-        trafficCard.addView(secondaryButton("CSV format & example") { showTrafficHelp() })
-        trafficCard.addView(gap(8))
-        trafficCard.addView(secondaryButton("Clear imported traffic") { clearTraffic() })
-        root.addView(trafficCard)
-        root.addView(gap(10))
-        trafficList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(trafficList)
-        root.addView(gap(20))
-
-        root.addView(label("Tools & reports", 20f, true))
-        root.addView(gap(10))
-        val tools = card()
-        tools.addView(secondaryButton("Open router settings") {
-            val g = gateway
-            if (g == null) toast("Router gateway not detected")
-            else startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://$g")))
+        root.addView(expandableSection(
+            "Live traffic",
+            "Optional • Needs traffic data from your router or collector"
+        ) {
+            liveSummary = label("Not set up", 15f, true)
+            addView(liveSummary)
+            addView(gap(8))
+            addView(small("This is separate from finding devices. Configure a trusted data source to view per-device usage."))
+            addView(gap(10))
+            addView(secondaryButton("Set up traffic source") { configureLive() })
+            addView(gap(8))
+            liveButton = mainButton("Start monitoring") { toggleLive() }
+            addView(liveButton)
+            addView(gap(8))
+            addView(secondaryButton("Choose a device") { configureDeviceFilter() })
+            addView(gap(6))
+            filterStatus = small("Showing all reported devices")
+            addView(filterStatus)
+            addView(gap(10))
+            liveList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            addView(liveList)
         })
-        tools.addView(gap(8))
-        exportButton = secondaryButton("Share results as CSV") { shareCsv() }
-        tools.addView(exportButton)
-        tools.addView(gap(8))
-        historyButton = secondaryButton("View scan history") { showHistory() }
-        tools.addView(historyButton)
-        tools.addView(gap(12))
-        tools.addView(small("Device blocking and other devices' traffic require an authorized, compatible router integration. Not supported by this version."))
-        root.addView(tools)
+        root.addView(gap(20))
+
+        root.addView(expandableSection(
+            "Router traffic report",
+            "Import a CSV exported by your router"
+        ) {
+            trafficSummary = label("No report imported", 15f, true)
+            addView(trafficSummary)
+            addView(gap(8))
+            addView(small("Reports show data supplied by your router; they are not captured by this app."))
+            addView(gap(10))
+            addView(mainButton("Import traffic CSV") { pickTrafficCsv() })
+            addView(gap(8))
+            addView(secondaryButton("CSV format and example") { showTrafficHelp() })
+            addView(gap(8))
+            addView(secondaryButton("Clear imported report") { clearTraffic() })
+            addView(gap(10))
+            trafficList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            addView(trafficList)
+        })
+        root.addView(gap(10))
+
+        root.addView(expandableSection("More options", "Router settings, scan history, and export") {
+            addView(secondaryButton("Open router settings") {
+                val g = gateway
+                if (g == null) toast("Router gateway not detected")
+                else startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://$g")))
+            })
+            addView(gap(8))
+            exportButton = secondaryButton("Share device list as CSV") { shareCsv() }
+            addView(exportButton)
+            addView(gap(8))
+            historyButton = secondaryButton("View scan history") { showHistory() }
+            addView(historyButton)
+            addView(gap(12))
+            addView(small("Blocking devices and viewing other devices’ traffic require a compatible router integration."))
+        })
         setContentView(scroll)
         refreshNetworkInfo()
         restoreTraffic()
         liveEndpoint = prefs.getString("live_endpoint", "") ?: ""
-        if (liveEndpoint.isNotBlank()) liveSummary.text = "Configured • Tap Start live monitoring"
+        if (liveEndpoint.isNotBlank()) liveSummary.text = "Source saved • Start monitoring when ready"
     }
 
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
@@ -291,8 +331,8 @@ class MainActivity : Activity() {
         val info = networkInfo()
         gateway = info?.gateway
         localIp = info?.ip
-        status.text = if (info == null) "No accessible Wi-Fi IPv4 connection" else
-            "Connected • Phone: ${info.ip}/${info.prefix}\nRouter: ${info.gateway ?: "not detected"}"
+        status.text = if (info == null) "Not connected to an accessible Wi-Fi network" else
+            "Connected to Wi-Fi\nThis phone: ${info.ip}/${info.prefix}\nRouter: ${info.gateway ?: "not detected"}"
     }
 
     private fun reachable(ip: String): Boolean {
@@ -343,7 +383,7 @@ class MainActivity : Activity() {
         return discovered
     }
 
-    private fun readArpNeighbors(info: NetworkInfo): Set<String> {
+    private fun readArpNeighbors(info: NetworkInfo): Map<String, String> {
         return try {
             java.io.File("/proc/net/arp").useLines { lines ->
                 lines.drop(1).mapNotNull { line ->
@@ -354,15 +394,44 @@ class MainActivity : Activity() {
                     val mac = columns[3]
                     if (isInSubnet(ip, info) && ip != info.ip && ip != info.gateway &&
                         (flags and 0x2) != 0 &&
-                        mac != "00:00:00:00:00:00") ip else null
-                }.toSet()
+                        mac != "00:00:00:00:00:00") ip to mac else null
+                }.toMap()
             }
         } catch (e: java.io.IOException) {
             android.util.Log.w("WiFiGuardian", "Could not read the IPv4 neighbor cache", e)
-            emptySet()
+            emptyMap()
         } catch (e: SecurityException) {
             android.util.Log.w("WiFiGuardian", "Access to the IPv4 neighbor cache was denied", e)
-            emptySet()
+            emptyMap()
+        }
+    }
+
+    private fun resolveHostnames(ips: List<String>): Map<String, String> {
+        return try {
+            probes.invokeAll(
+                ips.map { ip ->
+                    java.util.concurrent.Callable {
+                        val hostname = try {
+                            InetAddress.getByName(ip).canonicalHostName.trimEnd('.')
+                        } catch (_: Exception) {
+                            ""
+                        }
+                        ip to hostname.takeIf { it.isNotBlank() && !it.equals(ip, ignoreCase = true) }
+                    }
+                },
+                2,
+                TimeUnit.SECONDS
+            ).mapNotNull { future ->
+                try {
+                    future.get()?.let { (ip, hostname) -> hostname?.let { ip to it } }
+                } catch (_: Exception) {
+                    null
+                }
+            }.toMap()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            android.util.Log.w("WiFiGuardian", "Hostname lookup was interrupted", e)
+            emptyMap()
         }
     }
 
@@ -403,14 +472,16 @@ class MainActivity : Activity() {
                 }
             }
             jobs.forEach { try { it.get(40, TimeUnit.SECONDS) } catch (_: Exception) { it.cancel(true) } }
+            val arpNeighbors = readArpNeighbors(info)
             val knownIps = synchronized(found) { found.map { it.first }.toSet() }
-            readArpNeighbors(info).filterNot { it in knownIps }.forEach {
+            arpNeighbors.keys.filterNot { it in knownIps }.forEach {
                 found.add(it to "LAN neighbor cache")
             }
             val sorted = synchronized(found) {
                 found.distinctBy { it.first }
                     .sortedWith(compareBy { ipv4Value(it.first) ?: Long.MAX_VALUE })
             }
+            val hostnames = resolveHostnames(sorted.map { it.first }.filter { it != info.ip })
             val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
             val previous = prefs.getString("last_ips", "")?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
             val current = sorted.map { it.first }.toSet()
@@ -425,20 +496,28 @@ class MainActivity : Activity() {
                 lastResults = sorted.toMutableList()
                 results.removeAllViews()
                 if (sorted.isEmpty()) {
-                    results.addView(small("No responding devices found. Your Wi-Fi may isolate devices or block probes."))
+                    results.addView(small("No devices were found in this scan. Some connected devices may not respond to discovery."))
                 }
                 sorted.forEach { (ip, role) ->
                     val row = card()
-                    val heading = when (role) {
-                        "This phone" -> "Your Redmi phone"
+                    val roleLabel = when (role) {
+                        "This phone" -> "This phone"
                         "Gateway (router)" -> "Wi-Fi router"
                         "UPnP/SSDP responding" -> "Smart / media device"
                         "LAN neighbor cache" -> "LAN neighbor"
                         else -> "Network device"
                     }
-                    row.addView(label("$heading${if (ip in newIps) "  • NEW" else ""}", 16f, true))
+                    val identity = when {
+                        ip == info.ip -> "${Build.MANUFACTURER} ${Build.MODEL} (this phone)".trim()
+                        else -> hostnames[ip] ?: roleLabel
+                    }
+                    row.addView(label("$identity${if (ip in newIps) "  • NEW" else ""}", 16f, true))
                     row.addView(gap(4))
-                    row.addView(small("IP: $ip  •  $role"))
+                    row.addView(small("IP: $ip  •  $roleLabel"))
+                    arpNeighbors[ip]?.let { mac ->
+                        row.addView(gap(4))
+                        row.addView(small("MAC: $mac"))
+                    }
                     trafficEntries.firstOrNull { it.ip == ip }?.let { t ->
                         row.addView(gap(5))
                         row.addView(small("Router report: ↓ ${formatBytes(t.rx)}  ↑ ${formatBytes(t.tx)}"))
@@ -452,7 +531,7 @@ class MainActivity : Activity() {
                     results.addView(row)
                     results.addView(gap(9))
                 }
-                summary.text = "${sorted.size} discovered/known • ${newIps.size} new • ${missingIps.size} not responding\nLast scan: $timestamp\nNot a complete router connected-client list."
+                summary.text = "${sorted.size} devices found • ${newIps.size} new • ${missingIps.size} seen before but not found this time\nLast scan: $timestamp\nThis may not include every device connected to Wi-Fi."
                 scanButton.isEnabled = true
                 scanButton.text = "Scan again"
                 progress.visibility = View.GONE

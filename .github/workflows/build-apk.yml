@@ -14,6 +14,11 @@ jobs:
     defaults:
       run:
         working-directory: ./android
+    env:
+      WIFIGUARDIAN_STORE_PASSWORD: ${{ secrets.WIFIGUARDIAN_STORE_PASSWORD }}
+      WIFIGUARDIAN_KEY_ALIAS: ${{ secrets.WIFIGUARDIAN_KEY_ALIAS }}
+      WIFIGUARDIAN_KEY_PASSWORD: ${{ secrets.WIFIGUARDIAN_KEY_PASSWORD }}
+      WIFIGUARDIAN_KEYSTORE_BASE64: ${{ secrets.WIFIGUARDIAN_KEYSTORE_BASE64 }}
 
     steps:
       - name: Checkout repository
@@ -47,6 +52,19 @@ jobs:
           test -n "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools'
+
+      - name: Configure stable APK signing
+        run: |
+          if [ -n "$WIFIGUARDIAN_KEYSTORE_BASE64" ]; then
+            test -n "$WIFIGUARDIAN_STORE_PASSWORD"
+            test -n "$WIFIGUARDIAN_KEY_ALIAS"
+            test -n "$WIFIGUARDIAN_KEY_PASSWORD"
+            printf '%s' "$WIFIGUARDIAN_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/wifiguardian-signing.jks"
+            echo "WIFIGUARDIAN_KEYSTORE_PATH=$RUNNER_TEMP/wifiguardian-signing.jks" >> "$GITHUB_ENV"
+            echo 'Stable signing configured'
+          else
+            echo 'Stable signing not configured; this APK uses the runner-specific debug key.'
+          fi
 
       - name: Compile APK
         run: |

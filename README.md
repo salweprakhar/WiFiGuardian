@@ -4,6 +4,8 @@ This contains the existing WiFi Guardian Android app (in `android/`), with a **S
 
 ## What it does and doesn't do
 - The Android **Scan nearby network devices** action is best-effort local discovery: it checks TCP responses, listens for compatible UPnP/SSDP responses, and includes resolved IPv4 neighbors from Android's ARP cache. It supports local IPv4 subnets with up to 1,022 host addresses.
+- The scan shows this phone's manufacturer/model and attempts reverse-DNS hostnames for discovered devices; it also displays a device's MAC address when Android exposes it in the neighbor cache. Other devices do not reliably publish their model/name, so their hostname or MAC may be unavailable or randomized.
+- The main screen prioritizes Wi-Fi discovery. Optional live traffic, router CSV imports, history, and export are grouped under expandable sections.
 - There is no router-independent Android API for enumerating every associated Wi-Fi client. Device isolation, firewalls, stale neighbor entries, or router behavior can hide devices or make results incomplete; a complete list requires a supported router integration.
 - Measures actual byte counts in HTTPS CONNECT tunnels **from a device explicitly configured to use your proxy**. Identifies that device by your chosen label, ID and source IP.
 - Existing WiFi Guardian app fetches `/traffic` and displays live upload/download speeds and totals. App updates about every 3 seconds. Set its filter to the device ID or IP.
@@ -53,3 +55,17 @@ Run `cd collector && python3 test_collector.py` to repeat Python integration tes
 
 ## GitHub Actions
 Copy the **contents** of `android/` to the root of your WiFiGuardian Git repository, including `.github/workflows/build-apk.yml`. The Actions build produces a debug APK artifact if the Android Gradle build succeeds. The collector must be run separately on your Mac; it is not part of the APK.
+
+### Installing or updating the APK
+The Redmi Note 8 Pro supports this app's minimum Android version (API 26). If Android reports **App not installed** while updating an existing copy, the most likely issue is a signing-certificate mismatch: GitHub-hosted runners generate a different default debug key for each build. Uninstall the existing WiFi Guardian copy, then install the newly downloaded APK. Uninstalling removes that app's local data.
+
+To install updates without uninstalling each time, configure a stable signing key for GitHub Actions:
+1. Generate a keystore that you will keep and reuse (do not commit it):
+   ```bash
+   keytool -genkeypair -v -keystore wifiguardian-signing.jks \
+     -alias wifiguardian -keyalg RSA -keysize 2048 -validity 10000
+   ```
+2. In the repository's **Settings → Secrets and variables → Actions**, add secrets named `WIFIGUARDIAN_KEYSTORE_BASE64`, `WIFIGUARDIAN_STORE_PASSWORD`, `WIFIGUARDIAN_KEY_ALIAS`, and `WIFIGUARDIAN_KEY_PASSWORD`. Set the first to the single-line Base64 encoding of the keystore file (on macOS, `base64 < wifiguardian-signing.jks | tr -d '\n'`).
+3. Rebuild and download the new APK artifact. Uninstall any copy signed with the previous runner-specific debug key once; subsequent APKs signed with this same keystore can update it.
+
+If a fresh install still fails, verify that the downloaded artifact is `app-debug.apk` and allow the app used to open it (for example, Files or the browser) to install unknown apps in Android settings. A successful CI build confirms compilation, not that Android accepted the APK on-device.
