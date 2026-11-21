@@ -229,7 +229,7 @@ class MainActivity : Activity() {
             filterStatus = small("Showing all reported devices")
             addView(filterStatus)
             addView(gap(10))
-            liveList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            liveList = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             addView(liveList)
         })
         root.addView(gap(20))
@@ -249,7 +249,7 @@ class MainActivity : Activity() {
             addView(gap(8))
             addView(secondaryButton("Clear imported report") { clearTraffic() })
             addView(gap(10))
-            trafficList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            trafficList = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             addView(trafficList)
         })
         root.addView(gap(10))
